@@ -1,0 +1,107 @@
+
+@import url('https://fonts.googleapis.com/css2?family=Roboto&display=swap');
+
+.chat-row {
+    display: flex;
+    width: 90%;
+    margin-left: auto;
+    margin-right: auto;
+    overflow: auto;
+    z-index: -1;
+}
+
+.row-reverse {
+    flex-direction: row-reverse;
+}
+
+.chat-bubble {
+    font-family:'Roboto';
+    font-weight: bold;
+    font-size: 14px;
+    border: 1px solid transparent;
+    padding: 5px 10px;
+    margin: 0px 7px;
+    max-width: 70%;
+    
+}
+
+.ai-bubble {
+    background-color: #F4F4F7; 
+    border-radius: 22px;
+    font-family:'Roboto';
+    font-weight: bold;
+    font-size: 14px;
+    color: black;
+    margin-left: 20px;
+    margin-top: 15px;
+   
+}
+
+.human-bubble {
+    background-color: #DEE1E6; 
+    color: black;
+    border-radius: 22px;
+    font-family:'Roboto';
+    font-weight: bold;
+    font-size: 14px;
+    margin-top: 15px;
+   
+}
+ /* title */
+/* div.css-zt5igj.eqr7zpz3{
+    font-family: 'Poppins', sans-serif;
+    color: rgb(13, 69, 154);
+    margin-top: 20px;
+    margin-bottom: 30px;
+    letter-spacing: 2px;
+    text-align: center;
+    position: relative;
+  
+} */
+
+/* making the gap between the title and the chat placeholder */
+div.css-1n76uvr.esravye0{
+    padding-top: 0;
+}
+div.block-container.css-1y4p8pa.ea3mdgi4{
+    margin-top: 25px;
+    padding-top: 0;
+}
+
+
+/* logo */
+div.css-1v0mbdj.e115fcil1{
+    margin-left: auto;
+    margin-right: auto;
+    margin-bottom: 20px;
+}
+
+div.css-1kyxreq.ebxwdo62{
+    margin-top: 20px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+div.css-1v0mbdj.ebxwdo61{
+    margin-left: 40%;
+    position: relative;
+    z-index: 100;
+}
+/* chatplaceholder */
+div.css-1ejefn0.esravye0{
+    overflow: hidden;
+}
+
+div.block-container.css-1y4p8pa.e1g8pov64{
+    padding-top: 0;
+}
+
+div.css-1n76uvr.esravye0{
+
+}
+
+div.element-container.css-1etyx85.esravye2{
+    padding-top: 0;
+    padding-bottom: 0;
+    margin-bottom: 0;
+}

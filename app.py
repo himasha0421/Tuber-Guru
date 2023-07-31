@@ -1,149 +1,266 @@
-import streamlit as st
+import os
+from datetime import time
+
 import openai
-from youtube_transcript_api import YouTubeTranscriptApi
+import pandas as pd
+import streamlit as st
+from llama_index import (KeywordTableIndex, LLMPredictor, ServiceContext,
+                         SimpleDirectoryReader, StorageContext,
+                         VectorStoreIndex, load_index_from_storage)
+from llama_index.llms import OpenAI
 from requests.exceptions import RequestException
+from sentence_splitter import SentenceSplitter, split_text_into_sentences
+from streamlit_chat import message
+from youtube_transcript_api import YouTubeTranscriptApi
+
 from src.cache import cache_get, cache_set
 
-key = st.secrets["auth_token"]
+# get openai api key from secrets tab
+key = st.secrets["openai_key"]
 # Set up OpenAI API credentials
 openai.api_key = key
 
-def combine_transcripts(video_ids):
-    combined_text = ""
-    for video_id in video_ids:
-        try:
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-            for line in transcript:
-                combined_text += line['text'] + " "
-        except RequestException as e:
-            st.error(f"Error retrieving transcript for Video ID: {video_id}")
-            st.error(str(e))
-    return combined_text
+# set the page layout to wide
+st.set_page_config(layout="wide")
+
+# devide the page into two columns
+slide1, slide2 = st.columns( [ 0.8 , 0.6 ] )
+
+
+def load_video_content( video_id ):
+    slide2.video( f'https://youtu.be/{video_id}' )
+
 
 def convert_single_video(video_id):
+
+    print( "loading" )
+
     try:
-        # validate cache
+        # validate cache on given video id / if that canbe found inside the cache then return it
         cache = cache_get(video_id)
         if cache is not None:
-            return cache
+            
+            # if the id inside the cache then we can load the index from the storage
+            storage_context = StorageContext.from_defaults(persist_dir="storage")
+            # laod index
+            index = load_index_from_storage(storage_context, index_id= f"index_{video_id}")
 
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        text = " ".join([line['text'] for line in transcript])
-        response = openai.Completion.create(
-            engine="text-davinci-003",
-            prompt="Transorm this into an SEO blog post also make it intuitive inspiring and captivating also make it a little bit on the longer side while maintaining SEO friendliness at the highest level with a title"+ text,
-            temperature=0.9,
-            max_tokens=500,
-            top_p=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.6,
-            stop=None,
-        )
-        blog_post = response.choices[0].text.strip()
+            # configure the query engine with customised parameters
+            query_engine =  index.as_query_engine(
+                                similarity_top_k=1,
+                                vector_store_query_mode="default"
+                            )
+            st.session_state.query_engine = query_engine
 
-        cache_set(video_id, blog_post)
+        # fetach youtube provided transcript or generate using whisper model
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id)
 
-        return blog_post
+            text = " ".join([ line['text'] + f'( time: {line["start"]} )' for line in transcript])
+            cache_set( video_id , text )
+
+            time_stamp = [ { "time" : line['start'] , 'text': line['text'] }  for line in transcript ]
+            # convert the data into dataframe object
+            df_transcript = pd.DataFrame( time_stamp )
+            print(df_transcript)
+            # set the state variable to the transcript
+            st.session_state.transcript = df_transcript
+
+            # write this text to a folder
+            if not( os.path.exists( os.path.join('data', video_id ) ) ):
+                # create the directory
+                os.makedirs( os.path.join( 'data' , video_id ) )
+
+            # write data to a text file
+            with open( os.path.join( 'data' , video_id , 'trancript.txt' ) , 'w' ) as f:
+                # write data tp the file
+                f.write( text )
+                f.close()
+
+            # index the data using llamaindex 
+            """
+            use simpledirectory reader and vectorstoreinex method , try out with different index types
+            """
+            # load docs using directory reader
+            docs = SimpleDirectoryReader( os.path.join( 'data' , video_id ) ).load_data()
+
+            # define the LLM
+            gpt_llm = OpenAI(temperature=0.1, 
+                         model="text-davinci-003", 
+                         max_tokens=512,
+                         top_p=0.8,
+                         frequency_penalty=0.0,
+                         presence_penalty=0.6)
+            
+            service_context = ServiceContext.from_defaults(llm=gpt_llm)
+
+            # generate the index from documents ( we can save index based on requirement )
+            """
+            vector stores :  simple in memeory store , Faiss , weaviate , Pinecone , Chorma
+            """
+            index = VectorStoreIndex.from_documents( docs ,  service_context = service_context )
+
+            # save the index into storage
+            index.set_index_id( f'index_{video_id}' )
+            index.storage_context.persist( "storage/" )
+
+            # configure the query engine with customised parameters
+            query_engine =  index.as_query_engine(
+                                similarity_top_k=1,
+                                vector_store_query_mode="default"
+                            )
+
+
+            st.session_state.query_engine = query_engine
+
+
+        except RequestException as e :
+            st.error(f"Error retrieving transcript for Video ID: {video_id}")
+        
     except RequestException as e:
         st.error(f"Error converting video with Video ID: {video_id}")
         st.error(str(e))
 
-def about_us():
-    st.title('About Us')
-    st.write('This is the About Us page.')
 
-def why_choose_us():
-    st.title('Why Choose Us')
-    st.write('This is the Why Choose Us page.')
+def init_session():
+
+    print("initializing")
+
+    # define the streamlit session states
+    if "video_id" not in st.session_state:
+        st.session_state.video_id = ''
+    if "raw_text" not in st.session_state:
+        st.session_state.raw_text = ''
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [ ] 
+    if "human_prompt" not in st.session_state:
+        st.session_state.human_prompt = '' 
+    if "index" not in st.session_state :
+        st.session_state.index = False
+    if "transcript" not in st.session_state :
+        st.session_state.transcript = pd.DataFrame()
+    if "chat_status" not in st.session_state:
+        st.session_state.chat_status = ''
+    if "blog_status" not in st.session_state:
+        st.session_state.blog_status = ''
+    if "prompt" not in st.session_state :
+        st.session_state.chat_prompt = """
+                                        Please answer the question below based solely on the context information provided.
+                                        You must provide an answer in one paragraph.
+                                        If you have a question unrelated that can not be answered with the provided context, please reply with \"Out Of Context Question\" as your response.\n
+                                        """
+        st.session_state.time_extractor = "Provide the time which can refer to answer the query.Don't show time's everywhere inside the text only display the first time instance in seperate new line ."
+        st.session_state.seo_prompt = "Transform this given context and user instruction into an SEO blog post also make it intuitive inspiring and captivating also make it a little bit on the longer \
+                                            side while maintaining SEO friendliness at the highest level with a title , make it interesting to read and easy to understand , \
+                                            strictly follow the given instructions ." 
+
+    
+
+
+def on_click_callback():
+    # user input
+    human_prompt = st.session_state.human_prompt
+
+    # llm output generation
+    gpt_query =  st.session_state.chat_prompt + human_prompt + st.session_state.time_extractor
+    llm_response = str( st.session_state.query_engine.query( gpt_query ) )
+
+    # add to the chat history
+    st.session_state.chat_history.append(
+            { 'human' : human_prompt , 'ai' : llm_response } 
+        )
+    
+
+
+def seo_callback(seo_query):
+    # seo user query
+    seo_context =  st.session_state.seo_prompt + seo_query 
+    print(seo_context)
+
+    # generate openai completion output
+    response =  openai.Completion.create(
+                    engine="text-davinci-003",
+                    prompt= seo_context ,
+                    temperature=0.7,
+                    max_tokens=500,
+                    top_p=0.8,
+                    frequency_penalty=0.0,
+                    presence_penalty=0.6,
+                    stop=None )
+    
+    blog_post = response.choices[0].text.strip()
+
+    return blog_post
+    
+
 
 def main():
-    st.title('GPTTUBE: CONVERT VIDEOS TO HIGH QUALITY SEO BLOG POSTS IN THE BLINK OF AN EYE🚀🚀🚀')
-
-    menu = ['Home', 'About', 'Our Solution', 'Why choose us', 'How to use', 'Limitations']
+    
+    menu = ['Home', 'About us' ]
     choice = st.sidebar.selectbox('Navigation', menu)
-
+    
     if choice == 'Home':
-        st.header('Home')
-        option = st.radio('Select an option:', ('Combine Transcripts', 'Convert Single Video'))
-        st.write('Do not know what a youtube id means visit #Howtouse to know how!!')
-        st.write('Getting an error? Videos of over 15 minutes may not work for transcription check #limitations for more info')
-        if option == 'Combine Transcripts':
-            st.subheader('Combine Transcripts')
-            video_id1 = st.text_input('YouTube Video ID 1')
-            video_id2 = st.text_input('YouTube Video ID 2')
-            
-            if st.button('Combine'):
-                video_ids = [video_id1, video_id2]
-                combined_text = combine_transcripts(video_ids)
-                if combined_text:
-                    try:
-                        response = openai.Completion.create(
-                            engine="text-davinci-003",
-                            prompt="Transorm this into an SEO blog post also make it intuitive inspiring and captivating also make it a little bit on the shorter side so that it does not break off while maintaining SEO friendliness at the highest level with a title"+combined_text,
-                            temperature=0.9,
-                            max_tokens=500,
-                            top_p=1.0,
-                            frequency_penalty=0.0,
-                            presence_penalty=0.6,
-                            stop=None,
-                        )
-                        blog_post = response.choices[0].text.strip()
-                        st.markdown('## Combined Blog Post:')
-                        st.write(blog_post)
-                    except RequestException as e:
-                        st.error("Error generating blog post")
-                        st.error(str(e))
-                else:
-                    st.warning("No transcripts found for the provided Video IDs")
-                
-        elif option == 'Convert Single Video':
-            st.subheader('Convert Single Video')
+
+        with slide1 :
+            st.title('Tuber - Guru🚀🚀🚀')
+
+            st.markdown('## Convert Single Video')
             video_id = st.text_input('YouTube Video ID')
-            if st.button('Convert'):
-                blog_post = convert_single_video(video_id)
-                if blog_post:
-                    st.markdown('## Converted Blog Post:')
-                    st.write(blog_post)
-                else:
-                    st.warning("No transcript found for the provided Video ID")
 
-    elif choice == 'About':
-                about_us()
-    
-    elif choice == 'Our Solution':
-        our_solution()
-    elif choice == 'Why choose us':
-        why_choose_us()
-    elif choice == 'How to use':
-        how()
-    elif choice == 'Limitations':
-        limit()
-def about_us():
-    st.title('About Us')
-    st.write('GPTTUBE , where we take innovation to a whole new level.🚀🚀🔬🔬')
-    st.write('We are a dedicated team of tech enthusiasts and developers, passionate about making the most out of artificial intelligence and its potential to revolutionize content creation.')
-    st.write('We began this journey with a simple but groundbreaking idea: to create a bridge between video content and written blogs, powered by advanced AI technology. Our mission is to help content creators, marketers, and businesses maximize their reach and efficiency by converting YouTube videos into engaging, SEO-friendly blog posts.')
-    
-def our_solution():
-    st.title('Our Solution')
-    
-    st.write('AT GPTTUBE we have developed a robust user friendly platform that harnesses the power of AI to convert your Youtube videos into high quality written content. Our AI model, trained on a massive database of text and videos, understands context, nuances, and language subtleties to provide outputs that maintain the essence and style of your original content')
-    st.write('Not only does our platform transcribe the spoken words in your video, but it also analyzes the context and transforms it into well-structured blog posts. Our AI solution even acknowledges the pauses, gestures, and emphasis made in the video to create a post that is not only a transcription but a meaningful narrative that resonates with your audience.')
+            # set the video id to a session state
+            st.session_state.video_id =  video_id
+            if st.button('Indexing'):
+                with st.spinner('index generation...'):
+                    convert_single_video(video_id)
 
-def why_choose_us():
-    st.title('Why Choose Us')
-    st.write('In this digital age where content is king, we aim to provide a comprehensive tool that helps you extend your reach and diversify your content. By converting your videos into blog posts, you can cater to various audience preferences, improve your SEO ranking, and ensure a wider presence across different platforms.')
-    st.write('We prioritize accuracy, speed, and user experience. With our GPTTUBE , you no longer need to worry about spending hours transcribing videos or hiring costly services. We are here to save you time, resources, and energy so you can focus on what matters most: creating impactful content.')
+            st.markdown('## Chat Arena:')
 
-def how():
-    st.write("Quick and easy tutorial to get you up and running🚀🚀")
-    st.write('Okay let us say you are new to youtube video ids right?')
-    st.write('let us say your url is https://www.youtube.com/watch?v=dQw4w9WgXcQ then your id are the alphabets after the v and the equal sign in some cases there may be an &t=any number then do not copy the letter after the & symbol in this case the id is dQw4w9WgXcQ')
-def limit():
-    st.title("Although we of course Are OP!! we still sadly have some limitations😔😔 ")
-    st.write('1.)Although the GPTTUBE platform works very finely in the 2 transcript combine modes if the videos are a bit too long then it may tend to break off and stop abruptly this feature will be fixed in future updates')
-    st.write('2.)Also the model may not accept videos over 15 minute videos(it may or may not based on the amount of words said in the video)')
-    st.write('3.)It does not yet transcribe any youtube videos in other languages such as hindi, bengali, spanish etc it also does not work for videos that deny transcription we are working on this issue at the current time by using a video transcription service')
+            with st.form(key='chat',clear_on_submit=True)  :
+                st.text_input("Hi There! Enter your question" , value= "" , key = "human_prompt")
+
+                submit = st.form_submit_button(label='Chat', on_click= on_click_callback )
+                with st.spinner('Working on it...'):
+                    for i in sorted( range( len(st.session_state.chat_history)  ) , reverse=True ) :     
+                        message(
+                            st.session_state.chat_history[i]['ai'], 
+                            allow_html=True ,
+                            key = f'{i}_ai'
+                        )
+
+                        message( st.session_state.chat_history[i]['human']  , is_user=True , key = f'{i}_human' )
+                            
+
+                    
+        with slide2 :
+            video_id = ''
+            load_video_content( st.session_state.video_id )
+
+            with st.container():
+                st.markdown("## Generate Blog Post")
+                slider =  st.slider( "select video content time span :",
+                                min_value = 0.0, 
+                                max_value = 1200.0, 
+                                value=(0.0, 120.0)
+                                )
+
+                st.text_input(
+                                "Input user requirements",
+                                key="seo_query",
+                            )
+
+                if st.button('Generate'):
+                        st.markdown('## Generated Blog Post:')
+                        t1 , t2 = slider[0] , slider[1]
+                        #filter the dataframe with transcript
+                        df = st.session_state.transcript
+                        df_tmp = df[ ( df.time >= t1 ) & ( df.time <= t2 ) ]
+                        seo_context = ' '.join(df_tmp['text'].tolist())
+                        with st.spinner('index generation...'):
+                            blog_post =  seo_callback( seo_query= seo_context )
+                            st.markdown( f'### generated blog: \n\n{blog_post}' )
+
+
 if __name__ == '__main__':
+    init_session()
     main()
 
